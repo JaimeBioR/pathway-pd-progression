@@ -1,0 +1,1716 @@
+---
+title: "Data Filtering and Preprocessing"
+author: 
+  - "Jaime Ñíguez"
+  - "Guillermo Rocamora"
+jupyter:
+  jupytext:
+    formats: ipynb,Rmd  
+    text_representation:
+      extension: .Rmd
+      format_name: rmarkdown
+      format_version: '1.2'
+      jupytext_version: 1.11.2
+  kernelspec:
+    display_name: R
+    language: R
+    name: ir
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+
+# Covariate identification
+
+```{r}
+
+library(variancePartition)
+library(BiocParallel)
+library(doParallel)
+library(FactoMineR)
+library(factoextra)
+library(DescTools)
+library(ggplot2)
+library(reshape2)
+library(tidyr)
+library(limma)
+library(tibble)
+library(qvalue)
+library(caret)
+library(scales)
+library(dplyr)
+
+base_dir <- "/home/jaimeniguez/PDBP_replication/"
+
+```
+
+File Structure
+
+    Gene File: This file must have genes in rows and samples in columns.
+
+    Covariates File: This file must contain the variables to be used for correction.
+
+Covariates for Analysis (PPMI)
+
+The following covariates are analyzed in the PPMI study.
+Numerical Variables
+
+    Cells count (If available)
+
+    Transcript Quality Metrics:
+
+        PCT_USABLE_BASES
+
+        RIN_Value
+
+        MAX_INSERT_SIZE
+
+        MODE_INSERT_SIZE
+
+        Ratio_260_230
+
+        Specimen_Quantity
+
+        num_GCAG_splices
+
+        Ratio_260_280
+
+        RIBBOSOMAL_BASES
+
+        deletion_length
+
+        deletion_rate
+
+        Normalization_Volumeb__30ng_ul_
+
+    age_at_baseline
+
+Categorical Variables
+
+    Plate
+
+    sex
+
+    race
+
+## Sample selection
+```{r}
+
+PDBP_exp <- readRDS("PDBP_exp")
+
+PDBP_exp$sample_id <- NULL
+
+# VST normalization
+PDBP_exp_log2 <- vst(as.matrix(t(PDBP_exp)))
+
+PDBP_exp <- as.data.frame(t(PDBP_exp_log2))
+
+
+
+Correction_Covariates <- readRDS("Correction_Covariates") 
+
+Visit <- c("M0", "M6", "M12", "M18", "M24")
+Diagnosis <- "PD"
+
+# Identificar los participant_id que tienen todos los valores de Visit
+valid_participants <- Correction_Covariates %>%
+  group_by(participant_id) %>%
+  filter(all(Visit %in% visit_name)) %>%
+  pull(participant_id) %>%
+  unique()
+
+# Filtrar los datos según las condiciones adicionales
+Correction_Covariates <- Correction_Covariates %>%
+  filter(participant_id %in% valid_participants &
+         visit_name %in% Visit &
+         study_arm %in% Diagnosis
+         )
+
+table(Correction_Covariates$visit_name)
+
+# 
+# Covariates <- as.data.frame(readRDS("PDBP_covariates_extra"))
+# rownames(Covariates) <- Covariates$sample_id
+# 
+# # Filtrar los datos según las condiciones adicionales
+# Covariates <- Covariates %>%
+#   filter(participant_id %in% valid_participants &
+#          visit_name %in% Visit &
+#          study_arm %in% Diagnosis
+#          )
+# 
+# table(Correction_Covariates$visit_name)
+# 
+# 
+# table(Covariates$visit_name)
+
+
+
+
+```
+
+
+
+## Filtrado del fichero de expresión 
+
+######################## Filtrando con mínimo de expresión ############################
+#######################################################################################
+
+```{r eval=FALSE}
+
+# Create a vector to store the number of columns to retain for each threshold.
+num_columnas <- numeric()
+
+# Iterate over different threshold values and store the number of columns to retain.
+for (umbral in seq(0, 99, by = 1)) {
+  # Calculate the percentage of high-expression samples for the current threshold.
+  porcentaje_muestras_altas <- colSums(PDBP_exp > umbral) / nrow(PDBP_exp)
+  
+  # Retrieve the names of the columns that meet the criterion.
+  columnas_a_mantener <- names(porcentaje_muestras_altas[porcentaje_muestras_altas >= 0.8 & !is.na(porcentaje_muestras_altas)])
+  
+  # Count the number of columns to retain.
+  num_columnas <- c(num_columnas, length(columnas_a_mantener))
+}
+
+saveRDS(num_columnas, "num_columnas_PDBP")
+
+```
+
+```{r eval=TRUE, echo=FALSE}
+num_columnas <- readRDS(file.path(base_dir, "num_columnas_PDBP"))
+```
+
+```{r}
+
+# Plot the number of columns to retain as a function of the threshold.
+plot(seq(0, 99, by = 1), num_columnas, type = "l", xlab = "Umbral", ylab = "Número de columnas a mantener"); abline(h = num_columnas[which(seq(0, 99, by = 1) == 6)], col = "red", lty = 2, lwd = 2)
+
+```
+
+
+
+Genes meeting the condition are selected using a threshold value of 6.
+
+```{r}
+
+# A threshold value is chosen, which must be reached by at least 80% of the samples for each gene expression.
+umbral <- 6
+
+# The number of samples exceeding the threshold in each column is counted, and the corresponding percentage is calculated.
+porcentaje_muestras_altas <- colSums(PDBP_exp > umbral) / nrow(PDBP_exp)
+
+# Retrieve the names of the columns that meet the criterion.
+columnas_a_mantener <- names(porcentaje_muestras_altas[porcentaje_muestras_altas >= 0.8])
+columnas_a_mantener <- subset(columnas_a_mantener, columnas_a_mantener != "NA")
+
+# saveRDS(columnas_a_mantener, "18686_genes")
+
+# Filter the dataframe to retain only the selected columns.
+PDBP_min <- PDBP_exp[, columnas_a_mantener]
+
+PDBP_exp <- PDBP_min
+
+dim(PDBP_exp)
+
+# saveRDS(PDBP_exp, "PDBP_exp_filtered")
+
+```
+
+
+###################################
+###################################
+
+
+
+
+```{r}
+# Asignar nombres de fila
+rownames(Correction_Covariates) <- Correction_Covariates$sample_id
+
+# Encontrar muestras comunes
+comm <- intersect(rownames(Correction_Covariates), rownames(PDBP_exp))
+
+# Filtrar ambos dataframes para mantener solo muestras comunes
+PDBP_exp <- PDBP_exp[comm,]
+PDBP_exp$sample_id <- NULL
+Correction_Covariates <- Correction_Covariates[comm,]
+
+
+# Verificar que tengan todas las visitas específicas requeridas
+# Primero identificamos qué visitas son obligatorias
+required_visits <- c("M0", "M6", "M12", "M18", "M24") # Ajusta según tus necesidades
+
+# Creamos una función para verificar si un paciente tiene todas las visitas requeridas
+has_all_visits <- function(patient_id, covariates_df, required_visits) {
+  patient_visits <- unique(covariates_df$visit_name[covariates_df$participant_id == patient_id])
+  all(required_visits %in% patient_visits)
+}
+
+# Aplicamos la función a todos los pacientes únicos
+all_patients <- unique(Correction_Covariates$participant_id)
+complete_patients <- all_patients[sapply(all_patients, has_all_visits, 
+                                      covariates_df = Correction_Covariates, 
+                                      required_visits = required_visits)]
+
+# Finalmente, filtramos ambos dataframes para mantener solo muestras de estos pacientes completos
+complete_samples <- Correction_Covariates$sample_id[Correction_Covariates$participant_id %in% complete_patients]
+
+PDBP_exp <- PDBP_exp[rownames(PDBP_exp) %in% complete_samples,]
+Correction_Covariates <- Correction_Covariates[Correction_Covariates$sample_id %in% complete_samples,]
+
+
+# Aplicar nearZeroVar a PDBP_exp 
+# # 
+# nzv <- nearZeroVar(PDBP_exp)
+# # 
+# if (length(nzv) > 0) {
+#   PDBP_exp_nzv <- PDBP_exp[, -nzv]
+# } else {
+#   PDBP_exp_nzv <- PDBP_exp
+# }# 
+# saveRDS(PDBP_exp_nzv, "PDBP_exp_nzv")
+# 
+# # Paso 2: Eliminar genes altamente correlacionados en los datos ya filtrados
+# cor_matrix <- cor(PDBP_exp_nzv, method = "pearson")
+# # 
+# saveRDS(cor_matrix, "cor_matrix_PDBP_exp_nzv")
+# 
+# cor_matrix <- readRDS("cor_matrix_PDBP_exp_nzv")
+# 
+# highly_correlated <- findCorrelation(cor_matrix, cutoff = 0.95)
+#  
+# PDBP_exp_filt <- PDBP_exp_nzv[, -highly_correlated]
+# # 
+# saveRDS(PDBP_exp_filt, "PDBP_exp_filt")
+
+PDBP_exp_filt <- readRDS("PDBP_exp_filt")
+
+
+
+# Alternative function that might handle large matrices better
+# findCorrelation_alt <- function(cor_matrix, cutoff = 0.9) {
+#   cor_matrix <- abs(cor_matrix)
+#   diag(cor_matrix) <- 0
+#   which(colSums(cor_matrix > cutoff) > 0)
+# }
+# 
+# findCorrelation_clean <- function(cor_matrix, cutoff = 0.9) {
+#   cor_matrix <- abs(cor_matrix)
+#   diag(cor_matrix) <- 0
+#   to_remove <- c()
+#   
+#   while (any(cor_matrix > cutoff)) {
+#     max_cor <- which(cor_matrix == max(cor_matrix), arr.ind = TRUE)[1, ]
+#     means <- colMeans(cor_matrix)
+#     remove_var <- if (means[max_cor[1]] > means[max_cor[2]]) max_cor[1] else max_cor[2]
+#     
+#     to_remove <- c(to_remove, remove_var)
+#     cor_matrix[remove_var, ] <- 0
+#     cor_matrix[, remove_var] <- 0
+#   }
+#   
+#   sort(unique(to_remove))
+# }
+# 
+# 
+# highly_correlated <- findCorrelation_clean(cor_matrix, cutoff = 0.95)
+# 
+# PDBP_exp_filt <- PDBP_exp_nzv[, -highly_correlated]
+# 
+# saveRDS(PDBP_exp_filt, "PDBP_exp_filt")
+# 
+# 
+
+
+```
+
+
+## Análisis de identificación de covariables
+
+Se llevan a cabo los siguientes apartados:
+
+    Realiza PCA sobre la matriz de expresión.
+
+    Calcula correlaciones entre PCs y covariables numéricas/categóricas.
+
+    Genera un scree plot con la varianza explicada por cada componente.
+
+    Ejecuta variancePartition para estimar la varianza explicada por cada covariable para cada gen.
+
+    Genera un violin plot de la varianza explicada por covariable.
+
+    Calcula métricas estadísticas clave (cuartil 3 y máximo).
+
+    Calcula el rho de Spearman ponderado para cada covariable con respecto a los PCs.
+
+    Genera los gráficos de corte para decidir qué covariables controlar.
+
+
+incluye la automatización completa para seleccionar covariables relevantes basándose en:
+
+    Tercer cuartil ≥ 3%
+
+    Máximo ≥ 75%
+
+    Spearman rho ponderado ≥ 0.025
+
+
+
+
+```{r}
+
+metadata = Correction_Covariates %>% select(., c("participant_id", "sample_id", "age_at_baseline", "sex", "race", "study_arm", "RIN_Value", "Plate", "visit_name", "Specimen_Quantity", "Concentration", "Submitted_Volume__ul_", "Normalization_Volume__30ng_ul_", "Total_Volume__ul_", "X_260_230_Ratio", "X_260_280_Ratio"))
+
+
+all_results <- list()
+
+for (v in unique(metadata$visit_name)) {
+  cat("Procesando visita:", v, "\n")
+
+  # Subset de muestras para esa visita
+  samples_v <- metadata %>% filter(visit_name == v)
+  expr_v <- PDBP_exp_filt[rownames(PDBP_exp_filt) %in% samples_v$sample_id, ]
+  meta_v <- samples_v
+
+  # Eliminar SampleID para evitar problemas
+  rownames(meta_v) <- meta_v$sample_id
+  meta_v$SampleID <- NULL
+  meta_v$visit_name <- NULL
+  meta_v$study_arm <- NULL
+
+
+  ## PCA hasta 85% varianza
+  expr_scaled <- scale(expr_v)
+  pca <- prcomp(expr_scaled, center = TRUE, scale. = TRUE)
+  explained_var <- pca$sdev^2 / sum(pca$sdev^2)
+  cum_var <- cumsum(explained_var)
+  n_pcs <- min(which(cum_var >= 0.85), 100)
+
+  pcs_df <- as.data.frame(pca$x[, 1:n_pcs])
+  pcs_df$sample_id <- rownames(pcs_df)
+  combined <- merge(pcs_df, meta_v, by = "sample_id")
+  
+  # Identificar variables categóricas (factor o character)
+  cat_vars <- names(Filter(function(x) is.factor(x) || is.character(x), meta_v))
+  cat_vars <- cat_vars[!cat_vars %in% c("participant_id", "sample_id")]
+  
+  cat_pvals <- sapply(cat_vars, function(var) {
+    var_values <- as.factor(combined[[var]])
+    
+    # Asegurar que haya más de 1 nivel
+    if (length(unique(var_values)) <= 1) return(NA)
+    
+    # Test para cada PC
+    pvals <- sapply(1:n_pcs, function(i) {
+      pc_vals <- combined[[paste0("PC", i)]]
+      
+      # Si hay pocos niveles, hacer chi-squared entre cuartiles de PC y variable
+      if (is.factor(meta_v[[var]]) && length(unique(var_values)) <= 5) {
+        # Categorizar PC en 4 cuartiles
+        pc_cat <- cut(pc_vals, breaks = quantile(pc_vals, probs = seq(0, 1, 0.25), na.rm = TRUE), include.lowest = TRUE)
+        tbl <- table(var_values, pc_cat)
+        if (all(dim(tbl) >= 2)) {
+          suppressWarnings(chisq.test(tbl)$p.value)
+        } else {
+          NA
+        }
+      } else {
+        # Kruskal-Wallis test
+        suppressWarnings(kruskal.test(pc_vals ~ var_values)$p.value)
+      }
+    })
+    
+    min(pvals, na.rm = TRUE)  # el menor p-valor entre todas las PCs
+  })
+  
+  cat_fdr <- p.adjust(cat_pvals, method = "fdr")
+    
+  ## Scree Plot
+  scree_df <- data.frame(PC = 1:length(explained_var), Variance = explained_var)
+  ggplot(scree_df[1:n_pcs, ], aes(x = PC, y = Variance)) +
+    geom_col() + theme_minimal() + ggtitle(paste("Scree Plot - Visita", v))
+
+  # Correlación numéricas: rho² * varianza
+  numeric_vars <- names(Filter(is.numeric, meta_v))
+
+  rho_weighted <- sapply(numeric_vars, function(var) {
+    rhos <- sapply(1:n_pcs, function(i) {
+      cor(combined[[var]], combined[[paste0("PC", i)]], method = "spearman")
+    })
+    sum((rhos^2) * explained_var[1:n_pcs])
+  })
+
+  # Significancia de rho
+  rho_pvals <- sapply(numeric_vars, function(var) {
+    pvals <- sapply(1:n_pcs, function(i) {
+      test <- cor.test(combined[[var]], combined[[paste0("PC", i)]], method = "spearman")
+      test$p.value
+    })
+    min(pvals)  # o ajustar p-valor global luego
+  })
+  rho_fdr <- p.adjust(rho_pvals, method = "fdr")
+
+  # VariancePartition
+
+  # Crear fórmula con todas las covariables
+  form <- ~ (1 | sample_id) + paste(colnames(meta_v), collapse = " + ")
+  
+  form <- as.formula(paste("~", paste(colnames(meta_v)[!colnames(meta_v) %in% c("participant_id", "sample_id")], collapse = " + ")))
+  # 
+  # form <- ~age_at_baseline + sex + RIN_Value + Plate
+
+  # Preparar ExpressionSet
+  vobj <- voom(t(expr_v))
+  varPart <- fitExtractVarPartModel(vobj, form, meta_v)
+
+  # Métricas por covariable
+  vp_stats <- rbind(
+    Q3 = apply(varPart, 2, quantile, probs = 0.75),
+    Max = apply(varPart, 2, max)
+    )
+
+  # Selección final de covariables relevantes
+  
+  # Alternative more readable version:
+  selected_by_rho_and_vp <- names(rho_weighted)[rho_weighted >= 0.025 & rho_fdr <= 0.05 & vp_stats["Q3", ] >= 0.03]
+  selected_by_vp_max <- colnames(varPart)[vp_stats["Max", ] >= 0.75]
+  selected_vars <- union(selected_by_rho_and_vp, selected_by_vp_max)
+  
+  # Guardar resultados
+  all_results[[as.character(v)]] <- list(
+    PCs_used = n_pcs,
+    Scree = scree_df,
+    Weighted_rho = rho_weighted,
+    rho_fdr = rho_fdr,
+    varPart = varPart,
+    varPart_stats = vp_stats,
+    Selected = selected_vars,
+    cat_fdr = cat_fdr  
+  )
+}
+
+
+saveRDS(all_results, "all_results_visits")
+
+# 
+# # Procesamiento para TODAS las visitas combinadas
+# cat("Procesando TODAS las visitas combinadas\n")
+# 
+# # Usar todas las muestras (sin filtrar por visita)
+# expr_all <- PDBP_exp_filt[rownames(PDBP_exp_filt) %in% metadata$sample_id, ]
+# meta_all <- metadata
+# 
+# # Eliminar columnas no relevantes (igual que antes)
+# rownames(meta_all) <- meta_all$sample_id
+# meta_all$SampleID <- NULL
+# meta_all$visit_name <- NULL
+# meta_all$study_arm <- NULL
+# 
+# ## PCA hasta 85% varianza
+# expr_scaled <- scale(expr_all)
+# pca <- prcomp(expr_scaled, center = TRUE, scale. = TRUE)
+# explained_var <- pca$sdev^2 / sum(pca$sdev^2)
+# cum_var <- cumsum(explained_var)
+# n_pcs <- min(which(cum_var >= 0.85), 100)
+# 
+# pcs_df <- as.data.frame(pca$x[, 1:n_pcs])
+# pcs_df$sample_id <- rownames(pcs_df)
+# combined <- merge(pcs_df, meta_all, by = "sample_id")
+# 
+# cat_vars <- names(Filter(function(x) is.factor(meta_v[[x]]) || is.character(meta_v[[x]]), meta_v))
+# 
+# cat_pvals <- sapply(cat_vars, function(var) {
+#   var_values <- as.factor(combined[[var]])
+#   
+#   if (length(unique(var_values)) <= 1) return(NA)
+#   
+#   pvals <- sapply(1:n_pcs, function(i) {
+#     pc_vals <- combined[[paste0("PC", i)]]
+#     
+#     if (is.factor(meta_v[[var]]) && length(unique(var_values)) <= 5) {
+#       pc_cat <- cut(pc_vals, breaks = quantile(pc_vals, probs = seq(0, 1, 0.25), na.rm = TRUE), include.lowest = TRUE)
+#       tbl <- table(var_values, pc_cat)
+#       if (all(dim(tbl) >= 2)) {
+#         suppressWarnings(chisq.test(tbl)$p.value)
+#       } else {
+#         NA
+#       }
+#     } else {
+#       suppressWarnings(kruskal.test(pc_vals ~ var_values)$p.value)
+#     }
+#   })
+#   
+#   min(pvals, na.rm = TRUE)
+# })
+# 
+# 
+# ## Scree Plot
+# scree_df <- data.frame(PC = 1:length(explained_var), Variance = explained_var)
+# ggplot(scree_df[1:n_pcs, ], aes(x = PC, y = Variance)) +
+#   geom_col() + theme_minimal() + ggtitle("Scree Plot - Todas las visitas")
+# 
+# # Correlación numéricas: rho² * varianza
+# numeric_vars <- names(Filter(is.numeric, meta_all))
+# 
+# rho_weighted <- sapply(numeric_vars, function(var) {
+#   rhos <- sapply(1:n_pcs, function(i) {
+#     cor(combined[[var]], combined[[paste0("PC", i)]], method = "spearman")
+#   })
+#   sum((rhos^2) * explained_var[1:n_pcs])
+# })
+# 
+# # Significancia de rho
+# rho_pvals <- sapply(numeric_vars, function(var) {
+#   pvals <- sapply(1:n_pcs, function(i) {
+#     test <- cor.test(combined[[var]], combined[[paste0("PC", i)]], method = "spearman")
+#     test$p.value
+#   })
+#   min(pvals)
+# })
+# rho_fdr <- p.adjust(rho_pvals, method = "fdr")
+# 
+# # VariancePartition
+# # Crear fórmula (ajusta según tus necesidades)
+# form <- ~age_at_baseline + sex + RIN_Value + Plate
+# 
+# # Preparar ExpressionSet
+# vobj <- voom(t(expr_all))
+# varPart <- fitExtractVarPartModel(vobj, form, meta_all)
+# 
+# # Métricas por covariable
+# vp_stats <- rbind(
+#   Q3 = apply(varPart, 2, quantile, probs = 0.75),
+#   Max = apply(varPart, 2, max)
+# )
+# 
+# # Selección final de covariables relevantes
+# selected_by_rho <- names(rho_weighted)[rho_weighted >= 0.025 & rho_fdr <= 0.05]
+# selected_by_vp <- colnames(varPart)[vp_stats["Q3", ] >= 0.03 | vp_stats["Max", ] >= 0.75]
+# 
+# final_selected <- union(selected_by_rho, selected_by_vp)
+# 
+# # Guardar resultados en la misma lista
+# all_results[[as.character(v)]] <- list(
+#   PCs_used = n_pcs,
+#   Scree = scree_df,
+#   Weighted_rho = rho_weighted,
+#   rho_fdr = rho_fdr,
+#   varPart = varPart,
+#   varPart_stats = vp_stats,
+#   Selected = final_selected,
+#   cat_pvals = cat_pvals  # ⬅️ nuevo
+# )
+# 
+# 
+# # saveRDS(all_results, "all_results_all_visits")
+# 
+# all_results <- readRDS("all_results_all_visits")
+
+
+results_M0 <- all_results$M0    
+results_M6 <- all_results$M6
+results_M12 <- all_results$M12
+results_M18 <- all_results$M18  
+results_M24 <- all_results$M24
+# results_All <- all_results$All_visits_combined
+
+
+results_M0$Selected
+results_M6$Selected
+results_M12$Selected
+results_M18$Selected
+results_M24$Selected
+# results_All$Selected
+
+
+
+
+  
+```
+
+## Plots con resultados de la identificación de covariables
+```{r eval=FALSE}
+
+generate_plots <- function(res, model_name = "M0") {
+  library(ggplot2)
+  library(dplyr)
+  library(scales)
+  library(reshape2)
+  library(tibble)
+  
+  if (!all(c("Scree", "varPart", "Weighted_rho", "rho_fdr", "varPart_stats") %in% names(res))) {
+    stop("El objeto 'res' no tiene la estructura esperada. Debe contener: Scree, varPart, Weighted_rho, rho_fdr, varPart_stats")
+  }
+
+  # --------------------------
+  # 1. Scree Plot
+  # --------------------------
+  scree_df <- res$Scree
+  scree_df$cumVar <- cumsum(scree_df$Variance)
+  scree_df$PC <- as.factor(scree_df$PC)
+
+  p1 <- ggplot(scree_df[1:34, ], aes(x = PC, y = Variance)) +
+    geom_col(fill = "steelblue") +
+    geom_text(aes(label = percent(Variance, accuracy = 0.1)), vjust = -0.5, size = 3) +
+    geom_line(aes(y = cumVar), group = 1, color = "red", size = 1) +
+    geom_point(aes(y = cumVar), color = "red", size = 2) +
+    geom_hline(yintercept = 0.85, linetype = "dashed", color = "darkgreen") +
+    annotate("text", x = 1, y = 0.86, label = "85% threshold", hjust = 0, vjust = -0.5, 
+             color = "darkgreen", size = 3) +
+    theme_minimal() +
+    labs(title = paste("Scree Plot -", model_name), x = "Principal Component", y = "Variance Explained") +
+    scale_y_continuous(labels = percent_format(accuracy = 1))
+
+  # --------------------------
+  # 2. Variance Partition Plot
+  # --------------------------
+  vp_df <- melt(as.data.frame(res$varPart), variable.name = "Covariate", value.name = "Variance")
+
+  p2 <- ggplot(vp_df, aes(x = Covariate, y = Variance, fill = Covariate)) +
+    geom_violin() +
+    theme_minimal() +
+    labs(title = paste("VariancePartition per covariate (", model_name, ")", sep = ""),
+         y = "Variance explained (%)", x = "Covariate") +
+    scale_y_continuous(labels = percent_format(accuracy = 1)) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none")
+
+  # --------------------------
+  # 3. Combinar resultados de numéricas y categóricas
+  # --------------------------
+  # Numéricas
+  num_df <- data.frame(
+    Covariate = names(res$Weighted_rho),
+    rho_weighted = res$Weighted_rho,
+    FDR = res$rho_fdr,
+    Q3_varExp = res$varPart_stats["Q3",],
+    stringsAsFactors = FALSE
+  )
+  num_df$pvalue <- num_df$FDR
+  common_vars <- intersect(num_df$Covariate, colnames(res$varPart_stats))
+  num_df$Q3_varExp <- NA
+  num_df$Max_varExp <- NA
+  num_df$Q3_varExp[num_df$Covariate %in% common_vars] <- res$varPart_stats["Q3", common_vars]
+  num_df$Max_varExp[num_df$Covariate %in% common_vars] <- res$varPart_stats["Max", common_vars]
+
+  # Categóricas
+  if (!is.null(res$cat_pvals)) {
+    cat_pvals <- res$cat_pvals
+    cat_df <- tibble(
+      Covariate = names(cat_pvals),
+      rho_weighted = NA,
+      FDR = p.adjust(cat_pvals, method = "fdr"),
+      pvalue = cat_pvals,
+      Q3_varExp = NA,
+      Max_varExp = NA
+    )
+  } else {
+    cat_df <- NULL
+  }
+
+  # Combinar ambas
+  all_df <- bind_rows(num_df, cat_df) %>%
+    mutate(
+      signif_cat = case_when(
+        FDR < 0.05 ~ "FDR < 0.05",
+        pvalue < 0.05 ~ "P < 0.05",
+        TRUE ~ "NS"
+      ),
+      signif_cat = factor(signif_cat, levels = c("NS", "P < 0.05", "FDR < 0.05"))
+    )
+
+  # --------------------------
+  # 4. Gráficos conjuntos
+  # --------------------------
+  p3 <- ggplot(all_df, aes(x = -log10(pvalue), y = reorder(Covariate, -log10(pvalue)))) +
+    geom_point(aes(size = -log10(pvalue), color = signif_cat), alpha = 0.8) +
+    scale_color_manual(values = c("NS" = "gray", "P < 0.05" = "red", "FDR < 0.05" = "purple")) +
+    labs(x = expression(-log[10] * " p-value"), y = NULL,
+         color = "Significance", size = "-log10(p)",
+         title = paste("Association significance -", model_name)) +
+    theme_minimal()
+
+  p4 <- ggplot(all_df, aes(x = rho_weighted, y = reorder(Covariate, rho_weighted))) +
+    geom_point(aes(size = rho_weighted, color = signif_cat), alpha = 0.8, na.rm = TRUE) +
+    geom_vline(xintercept = 0.025, linetype = "dashed") +
+    scale_color_manual(values = c("NS" = "gray", "P < 0.05" = "red", "FDR < 0.05" = "purple")) +
+    labs(x = "Weighted rho² (variance explained)", y = NULL,
+         color = "Significance", size = "Weighted rho",
+         title = paste("Weighted rho by covariate -", model_name)) +
+    theme_minimal()
+
+  p5 <- ggplot(all_df, aes(x = Q3_varExp, y = reorder(Covariate, Q3_varExp))) +
+    geom_point(aes(size = rho_weighted, color = signif_cat), alpha = 0.8, na.rm = TRUE) +
+    geom_vline(xintercept = 0.03, linetype = "dashed") +
+    scale_color_manual(values = c("NS" = "gray", "P < 0.05" = "red", "FDR < 0.05" = "purple")) +
+    labs(x = "Q3 % Variance explained (variancePartition)", y = NULL,
+         color = "Significance", size = "Weighted rho",
+         title = paste("Q3 variance explained -", model_name)) +
+    theme_minimal()
+
+  p6 <- ggplot(all_df, aes(x = Max_varExp, y = reorder(Covariate, Max_varExp))) +
+    geom_point(aes(size = rho_weighted, color = signif_cat), alpha = 0.8, na.rm = TRUE) +
+    geom_vline(xintercept = 0.75, linetype = "dashed") +
+    scale_color_manual(values = c("NS" = "gray", "P < 0.05" = "red", "FDR < 0.05" = "purple")) +
+    labs(x = "Max % Variance explained (variancePartition)", y = NULL,
+         color = "Significance", size = "Weighted rho",
+         title = paste("Max variance explained -", model_name)) +
+    theme_minimal()
+
+  # Bubble plot
+  bubble_all_plot <- ggplot(all_df, aes(x = rho_weighted, y = reorder(Covariate, rho_weighted))) +
+    geom_point(aes(size = rho_weighted, fill = signif_cat), shape = 21, color = "black", alpha = 0.7, na.rm = TRUE) +
+    geom_vline(xintercept = 0.025, linetype = "dashed") +
+    scale_fill_manual(values = c("NS" = "gray", "P < 0.05" = "red", "FDR < 0.05" = "purple")) +
+    theme_minimal() +
+    labs(
+      title = paste("Variance explained -", model_name),
+      x = "Variance explained - Weighted Spearman's rho",
+      y = NULL,
+      fill = "Significance",
+      size = "Weighted rho"
+    )
+
+  return(list(
+    scree_plot = p1,
+    variance_partition_plot = p2,
+    pvalue_plot = p3,
+    weighted_rho_plot = p4,
+    q3_variance_plot = p5,
+    max_variance_plot = p6,
+    bubble_all_plot = bubble_all_plot
+  ))
+}
+
+
+
+# Ejemplo de uso:
+plotsM0 <- generate_plots(results_M0, model_name = "M0")
+plotsM6 <- generate_plots(results_M6, model_name = "M6")
+plotsM12 <- generate_plots(results_M12, model_name = "M12")
+plotsM18 <- generate_plots(results_M18, model_name = "M18")
+plotsM24 <- generate_plots(results_M24, model_name = "M24")
+plotsAll <- generate_plots(results_All, model_name = "All")
+
+
+
+# Queda por añadir lo siguiente (heatmaps)
+# library(pheatmap)
+# 
+# # Extraer datos
+# res <- results_M0
+# rho_mat <- outer(names(res$Weighted_rho), paste0("PC", 1:20), 
+#   Vectorize(function(var, pc) cor(res$Scree$PC[1:20], res$Scree$Variance[1:20])))
+# 
+# rownames(rho_mat) <- names(res$Weighted_rho)
+# colnames(rho_mat) <- paste0("PC", 1:20)
+# 
+# # Filtrar covariables numéricas seleccionadas
+# num_vars_selected <- names(Filter(is.numeric, res$Weighted_rho))[names(res$Weighted_rho) %in% res$Selected]
+# 
+# pheatmap(
+#   rho_mat[num_vars_selected, , drop = FALSE],
+#   cluster_rows = TRUE,
+#   cluster_cols = TRUE,
+#   main = "Spearman correlation (numeric covariates vs PCs)",
+#   color = colorRampPalette(c("blue", "white", "red"))(50)
+# )
+# 
+# 
+# 
+# 
+# # Función para eta²
+# eta_squared <- function(pc, group) {
+#   summary(aov(pc ~ group))[[1]][["Sum Sq"]][1] / sum(summary(aov(pc ~ group))[[1]][["Sum Sq"]])
+# }
+# 
+# # Extraer PCs y metadatos
+# pcs <- res$Scree$PC[1:20]
+# cat_vars <- setdiff(res$Selected, names(res$Weighted_rho))  # categóricas seleccionadas
+# 
+# # Supón que tienes meta_v (el dataframe usado para `res`)
+# eta_mat <- sapply(paste0("PC", 1:20), function(pc) {
+#   sapply(cat_vars, function(var) {
+#     eta_squared(res$varPart[[pc]], meta_v[[var]])
+#   })
+# })
+# 
+# pheatmap(
+#   t(eta_mat),
+#   cluster_rows = TRUE,
+#   cluster_cols = TRUE,
+#   main = "Eta-squared (categorical covariates vs PCs)",
+#   color = colorRampPalette(c("white", "red"))(50)
+# )
+
+
+
+
+```
+
+
+<!-- ## 1. PCA sobre la matriz de expresión -->
+<!-- ```{r} -->
+
+<!-- expr_matrix <- scale(PDBP_exp_filt) -->
+<!-- pca <- prcomp(expr_matrix, center = TRUE, scale. = TRUE) -->
+<!-- explained_var <- pca$sdev^2 / sum(pca$sdev^2) -->
+<!-- pc_scores <- as.data.frame(pca$x) -->
+<!-- pc_scores$SampleID <- rownames(pc_scores) -->
+<!-- metadata$SampleID <- rownames(metadata) -->
+<!-- combined <- merge(pc_scores, metadata, by = "SampleID") -->
+
+
+<!-- ``` -->
+<!-- ### 1.1. Heatmap de correlación entre covariables numéricas y PCs -->
+<!-- ```{r} -->
+
+<!-- # Selección de variables numéricas -->
+<!-- numeric_vars <- names(Filter(is.numeric, metadata)) -->
+<!-- num_corr <- sapply(numeric_vars, function(var) { -->
+<!--   sapply(1:20, function(i) { -->
+<!--     cor(combined[[var]], combined[[paste0("PC", i)]], method = "spearman", use = "complete.obs") -->
+<!--   }) -->
+<!-- }) -->
+<!-- rownames(num_corr) <- paste0("PC", 1:20) -->
+<!-- num_corr <- t(num_corr) -->
+
+<!-- # Heatmap con pheatmap -->
+<!-- pheatmap::pheatmap(num_corr, -->
+<!--                    cluster_rows = TRUE, -->
+<!--                    cluster_cols = TRUE, -->
+<!--                    display_numbers = TRUE, -->
+<!--                    color = colorRampPalette(c("blue", "white", "red"))(100), -->
+<!--                    main = "Correlación Spearman: Covariables Numéricas vs PCs") -->
+
+
+<!-- ``` -->
+
+
+<!-- ### 1.2. Heatmap de correlación (eta²) entre covariables categóricas y PCs -->
+<!-- ```{r} -->
+
+<!-- # Selección de variables categóricas -->
+<!-- categorical_vars <- names(metadata)[sapply(metadata, function(x) is.factor(x) || is.character(x))] -->
+<!-- categorical_vars <- setdiff(categorical_vars, "SampleID") -->
+
+<!-- # Calcular eta² manualmente -->
+<!-- calc_eta2 <- function(pc, group) { -->
+<!--   df <- data.frame(pc = pc, group = factor(group)) -->
+<!--   aov_model <- aov(pc ~ group, data = df) -->
+<!--   ss_total <- sum((df$pc - mean(df$pc))^2) -->
+<!--   ss_between <- sum((tapply(df$pc, df$group, mean) - mean(df$pc))^2 * table(df$group)) -->
+<!--   eta2 <- ss_between / ss_total -->
+<!--   return(eta2) -->
+<!-- } -->
+
+<!-- cat_eta <- sapply(categorical_vars, function(var) { -->
+<!--   sapply(1:ncol(pca$x), function(i) { -->
+<!--     calc_eta2(combined[[paste0("PC", i)]], combined[[var]]) -->
+<!--   }) -->
+<!-- }) -->
+<!-- rownames(cat_eta) <- paste0("PC", 1:ncol(pca$x)) -->
+<!-- cat_eta <- t(cat_eta) -->
+
+<!-- # Heatmap -->
+<!-- pheatmap::pheatmap(cat_eta, -->
+<!--                    cluster_rows = TRUE, -->
+<!--                    cluster_cols = TRUE, -->
+<!--                    display_numbers = TRUE, -->
+<!--                    color = colorRampPalette(c("white", "darkgreen"))(100), -->
+<!--                    main = "Asociación (eta²): Covariables Categóricas vs PCs") -->
+
+
+
+<!-- ``` -->
+
+<!-- ### 1.3. Scree plot de varianza explicada por cada PC -->
+
+<!-- ```{r} -->
+
+<!-- scree_data <- data.frame(PC = paste0("PC", 1:length(explained_var)), Variance = explained_var) -->
+<!-- ggplot(scree_data, aes(x = PC, y = Variance)) + -->
+<!--   geom_col(fill = "steelblue") + -->
+<!--   theme_minimal() + -->
+<!--   ylab("Varianza explicada") + xlab("Componente principal") + -->
+<!--   ggtitle("Scree plot") -->
+
+<!-- ``` -->
+
+<!-- ## 3. Correlaciones entre PCs y covariables -->
+<!-- ```{r} -->
+<!-- # Selección de PCs principales (80% varianza acumulada) -->
+<!-- cum_var <- cumsum(explained_var) -->
+<!-- n_pcs <- which(cum_var >= 0.8)[1] -->
+<!-- pc_scores <- as.data.frame(pca$x[, 1:n_pcs]) -->
+<!-- pc_scores$SampleID <- rownames(pc_scores) -->
+
+<!-- # Preparar metadatos -->
+<!-- metadata$SampleID <- rownames(metadata) -->
+<!-- combined <- merge(pc_scores, metadata, by = "SampleID") -->
+
+<!-- # Selecciona solo columnas numéricas de metadata -->
+<!-- numeric_vars <- names(Filter(is.numeric, metadata)) -->
+<!-- numeric_vars <- setdiff(numeric_vars, "SampleID")  # asegurarse -->
+
+<!-- # Calcular Spearman ponderado solo para covariables numéricas -->
+<!-- rho_weighted <- sapply(numeric_vars, function(var) { -->
+<!--   x <- sapply(1:n_pcs, function(i) { -->
+<!--     cor(combined[[var]], combined[[paste0("PC", i)]], method = "spearman", use = "complete.obs") -->
+<!--   }) -->
+<!--   sum(abs(x) * explained_var[1:n_pcs]) -->
+<!-- }) -->
+
+<!-- # Convertir a data.frame -->
+<!-- rho_weighted_df <- data.frame(Covariable = names(rho_weighted), Weighted_Spearman_Rho = rho_weighted) -->
+
+<!-- ``` -->
+
+<!-- ## 4. VariancePartition -->
+
+<!-- ```{r} -->
+
+<!-- # Preparar expresión (genes x muestras) -->
+<!-- expr_voom <- voom(t(PDBP_exp_filt))$E -->
+<!-- form <- ~ age_at_baseline + RIN_Value -->
+<!-- metadata <- metadata[match(rownames(PDBP_exp_filt), rownames(metadata)), ] -->
+<!-- varPart <- fitExtractVarPartModel(expr_voom, form, metadata) -->
+
+<!-- # varPart: matriz genes x covariables (porcentaje de varianza explicada) -->
+
+<!-- ``` -->
+
+<!-- ##5. Violin plot de varianza explicada por covariable -->
+<!-- ```{r} -->
+
+<!-- vp_long <- melt(as.data.frame(varPart), variable.name = "Covariable", value.name = "VarExp") -->
+<!-- ggplot(vp_long, aes(x = Covariable, y = VarExp)) + -->
+<!--   geom_violin(fill = "lightgreen") + -->
+<!--   theme_minimal() + ylab("Varianza explicada (%)") + -->
+<!--   ggtitle("Distribución de varianza explicada por covariable") -->
+
+
+<!-- ``` -->
+
+<!-- ## 6. Cálculo del Q3 y máximo -->
+
+<!-- ```{r} -->
+
+<!-- vp_stats <- data.frame( -->
+<!--   Covariable = colnames(varPart), -->
+<!--   Q3 = apply(varPart, 2, quantile, 0.75), -->
+<!--   Max = apply(varPart, 2, max) -->
+<!-- ) -->
+
+
+<!-- ``` -->
+
+<!-- ## 7. Selección automática de covariables relevantes -->
+
+<!-- ```{r} -->
+
+<!-- # Unir métricas -->
+<!-- vp_stats <- merge(vp_stats, rho_weighted_df, by = "Covariable") -->
+
+<!-- # Selección con criterios -->
+<!-- vp_stats$Selected <- with(vp_stats, Q3 >= 0.03 & Max >= 0.75 & Weighted_Spearman_Rho >= 0.025) -->
+
+<!-- # Mostrar resultados -->
+<!-- vp_stats[order(-vp_stats$Selected, -vp_stats$Q3), ] -->
+
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- selected_covariables <- vp_stats$Covariable[vp_stats$Selected] -->
+<!-- cat("Covariables seleccionadas automáticamente:\n") -->
+<!-- print(selected_covariables) -->
+
+<!-- ``` -->
+
+
+
+<!-- El resultado final te da la lista de covariables seleccionadas en resultado$selected_covariates. -->
+
+<!-- ```{r} -->
+
+<!-- # Identificar columnas con varianza cercana a cero -->
+<!-- nzv <- nearZeroVar(expr_matrix, freqCut = 95/5, uniqueCut = 10) -->
+
+<!-- # Filtrar la matriz -->
+<!-- expr_matrix_filtered <- expr_matrix[, -nzv] -->
+
+<!-- # Verificar dimensiones antes y después -->
+<!-- dim(expr_matrix)        # Original -->
+<!-- dim(expr_matrix_filtered) # Filtrada -->
+
+
+<!-- expr_matrix_filtered <- expr_matrix_filtered[, sapply(expr_matrix_filtered, is.numeric)] -->
+
+<!-- PDBP_exp_filt <- expr_matrix_filtered -->
+
+
+
+<!-- analyze_covariates <- function(expr_matrix, metadata, formula_string, pc_n = 20, threads = 4) { -->
+
+<!--   # 1. PCA -->
+<!--   pca <- prcomp(expr_matrix, scale. = TRUE) -->
+<!--   pc_values <- pca$x[, 1:pc_n] -->
+<!--   var_explained <- summary(pca)$importance[2, 1:pc_n] -->
+
+<!--   # 2. Separar covariables -->
+<!--   numeric_vars <- metadata[, sapply(metadata, is.numeric), drop = FALSE] -->
+<!--   factor_vars <- metadata[, !sapply(metadata, is.numeric), drop = FALSE] -->
+
+<!--   # 3. Correlaciones con PCs -->
+<!--   cor_numeric <- cor(numeric_vars, pc_values, method = "spearman", use = "pairwise.complete.obs") -->
+<!--   cor_categorical <- sapply(factor_vars, function(var) { -->
+<!--     sapply(1:pc_n, function(i) { -->
+<!--       EtaSq(aov(pc_values[, i] ~ var))$Eta.sq -->
+<!--     }) -->
+<!--   }) -->
+
+<!--   # 4. Scree plot -->
+<!--   scree_plot <- fviz_eig(pca, addlabels = TRUE, ylim = c(0, 50)) -->
+
+<!--   # 5. Variance Partition -->
+<!--   form <- as.formula(formula_string) -->
+<!--   param <- SnowParam(workers = threads, type = "SOCK") -->
+<!--   varPart <- fitExtractVarPartModel(expr_matrix, metadata, form, BPPARAM = param) -->
+
+<!--   # 6. Violin plot de varianza explicada -->
+<!--   violin_plot <- plotVarPart(varPart) + ggtitle("Variance Partition Plot") -->
+
+<!--   # 7. Estadísticas: Q3, Máximo -->
+<!--   vp_df <- as.data.frame(varPart) -->
+<!--   vp_stats <- vp_df %>% -->
+<!--     summarise(across(everything(), list(q3 = ~quantile(., 0.75), max = max))) -->
+<!--   vp_stats_long <- as.data.frame(t(vp_stats)) -->
+<!--   names(vp_stats_long) <- c("value") -->
+<!--   vp_stats_long$metric <- rep(c("Q3", "Max"), each = ncol(varPart)) -->
+<!--   vp_stats_long$covariate <- rep(colnames(varPart), 2) -->
+
+<!--   # 8. Rho ponderado -->
+<!--   weighted_rho <- sapply(numeric_vars, function(var) { -->
+<!--     cors <- sapply(1:pc_n, function(i) cor(var, pc_values[, i], method = "spearman", use = "complete.obs")) -->
+<!--     weighted <- cors * var_explained -->
+<!--     max(weighted, na.rm = TRUE) -->
+<!--   }) -->
+
+<!--   # 9. Plots de métricas -->
+<!--   q3_plot <- ggplot(vp_stats_long[vp_stats_long$metric == "Q3",], aes(x = reorder(covariate, value), y = value)) + -->
+<!--     geom_col() + coord_flip() + labs(title = "Q3 of Variance Explained", x = "Covariate", y = "Q3 (%)") -->
+
+<!--   max_plot <- ggplot(vp_stats_long[vp_stats_long$metric == "Max",], aes(x = reorder(covariate, value), y = value)) + -->
+<!--     geom_col() + coord_flip() + labs(title = "Max Variance Explained", x = "Covariate", y = "Max (%)") -->
+
+<!--   rho_df <- data.frame(covariate = names(weighted_rho), weighted_rho = weighted_rho) -->
+<!--   rho_plot <- ggplot(rho_df, aes(x = reorder(covariate, weighted_rho), y = weighted_rho)) + -->
+<!--     geom_col() + coord_flip() + labs(title = "Weighted Spearman Rho", x = "Covariate", y = "Max Weighted Rho") -->
+
+<!--   # 10. Selección de covariables significativas -->
+<!--   q3_vals <- vp_stats[1, seq(1, ncol(vp_stats), 2)] -->
+<!--   max_vals <- vp_stats[1, seq(2, ncol(vp_stats), 2)] -->
+<!--   selected_covariates <- names(q3_vals)[which(q3_vals >= 0.03 | max_vals >= 0.75)] -->
+<!--   selected_rho <- names(weighted_rho)[which(weighted_rho >= 0.025)] -->
+<!--   final_covariates <- union(selected_covariates, selected_rho) -->
+
+<!--   # Output -->
+<!--   list( -->
+<!--     pca = pca, -->
+<!--     cor_numeric = cor_numeric, -->
+<!--     cor_categorical = cor_categorical, -->
+<!--     scree_plot = scree_plot, -->
+<!--     varPart = varPart, -->
+<!--     violin_plot = violin_plot, -->
+<!--     vp_stats = vp_stats, -->
+<!--     q3_plot = q3_plot, -->
+<!--     max_plot = max_plot, -->
+<!--     weighted_rho = weighted_rho, -->
+<!--     rho_plot = rho_plot, -->
+<!--     selected_covariates = final_covariates -->
+<!--   ) -->
+<!-- } -->
+
+
+<!-- ``` -->
+
+
+
+<!-- ## Run -->
+
+<!-- "RIN_Value", "Ratio_260_230", "Specimen_Quantity", "Ratio_260_280", "Normalization_Volume__30ng_ul", "age_at_baseline", "Plate", "sex", "race" -->
+
+
+<!-- ```{r} -->
+
+<!-- resultado <- analyze_covariates(expr_matrix = expr_matrix, metadata = Correction_Covariates, formula_string = "~ age_at_baseline + sex + race + RIN_Value + Plate") -->
+
+<!-- print(resultado$q3_plot) -->
+<!-- print(resultado$violin_plot) -->
+<!-- resultado$selected_covariates -->
+
+<!-- ``` -->
+
+
+
+<!-- ## Gráfico con las covariables seleccionadas en distintos time points -->
+
+<!-- ```{r} -->
+
+<!-- Hay que hacerlo por separado por visitas? -->
+<!-- # Supón que ya has generado los resultados: -->
+<!-- # res_list <- list( -->
+<!-- #   M0 = analyze_covariates(...), -->
+<!-- #   M6 = analyze_covariates(...), -->
+<!-- #   M12 = analyze_covariates(...), -->
+<!-- #   M24 = analyze_covariates(...), -->
+<!-- #   M36 = analyze_covariates(...), -->
+<!-- #   MAll = analyze_covariates(...) -->
+<!-- # ) -->
+
+<!-- # 1. Obtener el conjunto completo de covariables seleccionadas -->
+<!-- all_covariates <- unique(unlist(lapply(res_list, function(x) x$selected_covariates))) -->
+
+<!-- # 2. Crear matriz binaria de selección (1 = seleccionada, 0 = no seleccionada) -->
+<!-- selection_matrix <- sapply(res_list, function(res) { -->
+<!--   covs <- res$selected_covariates -->
+<!--   as.integer(all_covariates %in% covs) -->
+<!-- }) -->
+<!-- rownames(selection_matrix) <- all_covariates -->
+
+<!-- selection_df <- as.data.frame(selection_matrix) -->
+<!-- selection_df$covariate <- rownames(selection_df) -->
+<!-- selection_df_long <- pivot_longer(selection_df, cols = -covariate, names_to = "TimePoint", values_to = "Selected") -->
+
+<!-- # 4. Plot: Verde si seleccionada, Rojo si no -->
+<!-- ggplot(selection_df_long, aes(x = TimePoint, y = covariate, fill = factor(Selected))) + -->
+<!--   geom_tile(color = "white") + -->
+<!--   scale_fill_manual(values = c("0" = "firebrick", "1" = "forestgreen"), -->
+<!--                     name = "Seleccionada", -->
+<!--                     labels = c("No", "Sí")) + -->
+<!--   labs(title = "Selección de covariables por time point", -->
+<!--        x = "Time point", -->
+<!--        y = "Covariable") + -->
+<!--   theme_minimal() + -->
+<!--   theme(axis.text.x = element_text(angle = 45, hjust = 1), -->
+<!--         panel.grid = element_blank()) -->
+
+<!-- ``` -->
+
+
+
+<!-- # Versión para todas las visitas en una sola función -->
+<!-- ```{r} -->
+
+<!-- # Función para filtrar datos y ejecutar análisis por time point -->
+<!-- analyze_all_timepoints <- function(expr_mat, metadata, covariates, gene_column = "gene") { -->
+
+<!--   timepoints <- c("M0", "M6", "M12", "M24", "M36", "MAll") -->
+<!--   results_list <- list() -->
+
+<!--   for (tp in timepoints) { -->
+<!--     if (tp == "MAll") { -->
+<!--       meta_tp <- metadata -->
+<!--       expr_tp <- expr_mat -->
+<!--     } else { -->
+<!--       meta_tp <- metadata %>% filter(visit_name == tp) -->
+<!--       expr_tp <- expr_mat[, rownames(meta_tp)] -->
+<!--     } -->
+
+<!--     # Solo continuar si hay suficientes muestras -->
+<!--     if (ncol(expr_tp) >= 10) { -->
+<!--       vp_result <- analyze_covariates(expr_tp, meta_tp, covariates) -->
+<!--       results_list[[tp]] <- vp_result -->
+<!--     } else { -->
+<!--       warning(paste("No se ejecuta para", tp, "- menos de 10 muestras.")) -->
+<!--     } -->
+<!--   } -->
+
+<!--   return(results_list) -->
+<!-- } -->
+
+<!-- # Supón que ya tienes: expr_mat, metadata, y lista de covariables -->
+<!-- results <- analyze_all_timepoints(expr_mat, metadata, covariates) -->
+
+<!-- # Luego generas el heatmap -->
+<!-- plot_covariate_selection_heatmap <- function(results_list) { -->
+<!--   all_covariates <- unique(unlist(lapply(results_list, function(x) x$selected_covariates))) -->
+
+<!--   selection_matrix <- sapply(results_list, function(res) { -->
+<!--     covs <- res$selected_covariates -->
+<!--     as.integer(all_covariates %in% covs) -->
+<!--   }) -->
+<!--   rownames(selection_matrix) <- all_covariates -->
+
+<!--   selection_df <- as.data.frame(selection_matrix) -->
+<!--   selection_df$covariate <- rownames(selection_df) -->
+<!--   selection_df_long <- pivot_longer(selection_df, cols = -covariate, names_to = "TimePoint", values_to = "Selected") -->
+
+<!--   ggplot(selection_df_long, aes(x = TimePoint, y = covariate, fill = factor(Selected))) + -->
+<!--     geom_tile(color = "white") + -->
+<!--     scale_fill_manual(values = c("0" = "firebrick", "1" = "forestgreen"), -->
+<!--                       name = "Seleccionada", -->
+<!--                       labels = c("No", "Sí")) + -->
+<!--     labs(title = "Selección de covariables por time point", -->
+<!--          x = "Time point", -->
+<!--          y = "Covariable") + -->
+<!--     theme_minimal() + -->
+<!--     theme(axis.text.x = element_text(angle = 45, hjust = 1), -->
+<!--           panel.grid = element_blank()) -->
+<!-- } -->
+<!-- ``` -->
+
+
+
+
+
+
+# Correction studies
+
+
+```{r}
+library(variancePartition)
+library(edgeR)
+library(limma)
+
+# Datos
+metadata <- Correction_Covariates
+raw_counts <- t(PDBP_exp_filt)  # matriz de genes x muestras
+results_list <- list(
+  M0 = results_M0,
+  M6 = results_M6,
+  M12 = results_M12,
+  M18 = results_M18,
+  M24 = results_M24
+)
+
+# Resultado final
+vp_comparison <- list()
+
+# Expresión de genes corregidos
+corrected_data <- list()
+
+for (v in names(results_list)) {
+  cat("Procesando visita:", v, "\n")
+  
+  # 1. Subset de metadatos
+  meta_v <- metadata %>% 
+    filter(visit_name == v | v == "All") %>%  # "All" usa todas las muestras
+    select(-sample_id, -visit_name, -study_arm)
+  
+  # 2. Filtrar y transponer counts (asegurar genes x muestras)
+  expr_v_raw <- raw_counts[, colnames(raw_counts) %in% rownames(meta_v)]
+  meta_v <- meta_v[colnames(expr_v_raw), , drop = FALSE]  # Asegurar orden
+  
+  # 3. Filtrar genes con FPM > 1 en >=50% muestras
+  fpm <- edgeR::cpm(expr_v_raw, log = FALSE)
+  keep_genes <- rowMeans(fpm > 1) >= 0.5
+  expr_filt <- expr_v_raw[keep_genes, ]
+  
+  # 4. Obtener covariables seleccionadas (excluir "Residuals")
+  selected_covs <- setdiff(results_list[[v]]$Selected, "Residuals")
+  if (length(selected_covs) == 0) {
+    cat(" - No covariables seleccionadas para", v, "\n")
+    next
+  }
+  
+    # 5. Convertir variables categóricas a factores
+  meta_v <- meta_v %>%
+    mutate(across(where(is.character), as.factor))
+  
+  # 6. Preparar matriz de covariables para limma
+  # Verificar que las covariables seleccionadas existen en meta_v
+  available_covs <- intersect(selected_covs, colnames(meta_v))
+  missing_covs <- setdiff(selected_covs, colnames(meta_v))
+  
+  if (length(missing_covs) > 0) {
+    cat(" - Advertencia: Las siguientes covariables no se encontraron en meta_v:", 
+        paste(missing_covs, collapse = ", "), "\n")
+  }
+  
+  if (length(available_covs) == 0) {
+    cat(" - No hay covariables disponibles para", v, "\n")
+    next
+  }
+  
+  numeric_covs <- available_covs[sapply(meta_v[, available_covs, drop = FALSE], is.numeric)]
+  factor_covs <- available_covs[sapply(meta_v[, available_covs, drop = FALSE], is.factor)]
+  
+  # Verificar nuevamente antes de crear matrices
+  covar_mat <- NULL
+  
+  if (length(numeric_covs) > 0) {
+    covar_mat <- meta_v[, numeric_covs, drop = FALSE]
+  } else {
+    covar_mat <- data.frame(matrix(nrow = nrow(meta_v), ncol = 0))
+    rownames(covar_mat) <- rownames(meta_v)
+  }
+  
+  if (length(factor_covs) > 0) {
+    # Verificar que las columnas existen
+    existing_factor_covs <- intersect(factor_covs, colnames(meta_v))
+    if (length(existing_factor_covs) > 0) {
+      factor_matrix <- model.matrix(~ 0 + ., data = meta_v[, existing_factor_covs, drop = FALSE])
+      covar_mat <- cbind(covar_mat, factor_matrix)
+    }
+  }
+  # 7. Eliminar muestras con NA (opcional: imputar si es necesario)
+  covar_mat <- na.omit(covar_mat)
+  expr_filt <- expr_filt[, rownames(covar_mat)]
+  
+  # 8. Diseño básico (solo intercepto)
+  design <- matrix(1, nrow = ncol(expr_filt), ncol = 1, 
+                  dimnames = list(colnames(expr_filt), "Intercept"))
+  
+  # 9. Corrección con limma
+  corrected <- limma::removeBatchEffect(
+    expr_filt,
+    design = design,
+    covariates = covar_mat
+  )
+  
+  # Almacenar los datos corregidos en la lista
+  corrected_data[[v]] <- as.data.frame(corrected) %>% 
+    rownames_to_column("gene") %>% 
+    mutate(visit_name = v) %>% 
+    select(gene, visit_name, everything())
+  
+  
+  # 10. VariancePartition ANTES de corregir (igual que antes)
+  vobj <- voom(expr_filt)
+  varPart_before <- fitExtractVarPartModel(vobj, 
+                                          as.formula(paste("~", paste(selected_covs, collapse = "+"))), 
+                                          meta_v)
+  
+  # 11. Aplicar removeBatchEffect a los valores ajustados de voom (no a los datos crudos)
+  vobj_corrected <- vobj  # Copiar el objeto voom original
+  vobj_corrected$E <- limma::removeBatchEffect(
+    vobj$E,  # Valores transformados por voom (log-CPM + pesos)
+    design = design,
+    covariates = covar_mat
+  )
+  
+  # 12. Ajustar el modelo con los datos corregidos
+  varPart_after <- fitExtractVarPartModel(vobj_corrected, 
+                                         as.formula(paste("~", paste(selected_covs, collapse = "+"))), 
+                                         meta_v)
+  # 12. Guardar resultados
+  vp_comparison[[v]] <- list(
+    varPart_before = varPart_before,
+    varPart_after = varPart_after,
+    genes_used = rownames(expr_filt),
+    covariates_used = selected_covs
+  )
+}
+
+
+
+vp_comparison
+
+
+
+final_corrected_df <- bind_rows(corrected_data)
+
+
+```
+
+# Fichero de genes corregidos
+
+```{r}
+
+# Asegurar que vst_counts tenga genes como filas y muestras como columnas
+# y que las muestras estén en colnames()
+vst_counts_t <- t(PDBP_exp_filt)  # genes x muestras
+
+# Crear copia base para insertar correcciones
+merged_expression <- vst_counts_t
+
+# Reemplazar columnas con datos corregidos
+for (v in names(corrected_data)) {
+  message("Sustituyendo datos corregidos para la visita: ", v)
+  
+  corrected_df <- corrected_data[[v]]
+  
+  # Extraer expresión corregida
+  corrected_mat <- corrected_df %>%
+    select(-gene, -visit_name) %>%
+    as.matrix()
+  
+  # Asegurar que los genes están en el mismo orden
+  genes <- corrected_df$gene
+  corrected_mat <- corrected_mat[match(genes, rownames(merged_expression)), ]
+  
+  # Insertar en la matriz principal (solo reemplaza columnas que estén)
+  matched_samples <- intersect(colnames(corrected_mat), colnames(merged_expression))
+  merged_expression[genes, matched_samples] <- corrected_mat[, matched_samples]
+}
+
+
+
+PDBP_exp_corrected <- as.data.frame(t(merged_expression))
+
+saveRDS(PDBP_exp_corrected, "PDBP_exp_corrected")
+
+```
+
+
+
+
+# Plots before and after correction
+
+```{r}
+
+
+
+library(ggplot2)
+library(reshape2)
+
+# Función para graficar comparación antes/después
+plot_comparison <- function(varPart_before, varPart_after, visit_name) {
+  # Combinar resultados antes/después
+  df_before <- as.data.frame(varPart_before) %>%
+    melt() %>%
+    mutate(Stage = "Before Correction")
+  
+  df_after <- as.data.frame(varPart_after) %>%
+    melt() %>%
+    mutate(Stage = "After Correction")
+  
+  df_combined <- rbind(df_before, df_after)
+  
+  # Gráfico
+  p <- ggplot(df_combined, aes(x = variable, y = value, fill = Stage)) +
+    geom_violin(position = position_dodge(width = 0.8), alpha = 0.7) +
+    labs(
+      title = paste("Variance Partition -", visit_name),
+      x = "Covariables",
+      y = "Fraction of Variance Explained",
+      fill = ""
+    ) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  return(p)
+}
+
+# Generar PDFs para cada visita
+for (v in names(vp_comparison)) {
+  if (!is.null(vp_comparison[[v]]$varPart_before)) {
+    # Crear el gráfico
+    p <- plot_comparison(
+      vp_comparison[[v]]$varPart_before,
+      vp_comparison[[v]]$varPart_after,
+      v
+    )
+    
+    # Guardar en PDF
+    pdf_file <- paste0("VP_Comparison_", v, ".pdf")
+    ggsave(pdf_file, plot = p, width = 10, height = 6)
+    cat("PDF generado:", pdf_file, "\n")
+  } else {
+    cat("No hay datos para", v, "\n")
+  }
+}
+
+
+```
+
+
+
+```{r}
+
+library(gridExtra)
+library(ggplot2)
+library(reshape2)
+library(RColorBrewer)  # Para paletas de colores
+
+plot_separate <- function(varPart, title) {
+  df <- as.data.frame(varPart) %>% 
+    melt() %>%
+    mutate(variable = factor(variable))  # Asegurar que las covariables sean factores
+  
+  # Número de covariables únicas
+  n_covars <- length(unique(df$variable))
+  
+  # Paleta de colores (ajusta según necesidad)
+  if (n_covars <= 8) {
+    colors <- brewer.pal(n_covars, "Set2")  # Paleta cualitativa
+  } else {
+    colors <- viridis::viridis(n_covars)    # Paleta para muchos colores
+  }
+  
+  ggplot(df, aes(x = variable, y = value, fill = variable)) +
+    geom_violin(alpha = 0.8, trim = FALSE) +
+    scale_fill_manual(values = colors) +
+    labs(
+      title = title,
+      x = "",
+      y = "Variance Explained",
+      fill = "Covariables"
+    ) +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "bottom"
+    ) +
+    guides(fill = guide_legend(nrow = 2))  # Leyenda en 2 filas si hay muchas covariables
+}
+# Generar PDFs
+for (v in names(vp_comparison)) {
+  if (!is.null(vp_comparison[[v]]$varPart_before)) {
+    pdf(paste0("VP_Separate_", v, ".pdf"), width = 12, height = 6)
+    grid.arrange(
+      plot_separate(vp_comparison[[v]]$varPart_before, paste("Before -", v)),
+      plot_separate(vp_comparison[[v]]$varPart_after, paste("After -", v)),
+      ncol = 2
+    )
+    dev.off()
+  }
+}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+<!-- ```{r} -->
+
+<!-- library(edgeR) -->
+<!-- library(limma) -->
+<!-- library(variancePartition) -->
+<!-- library(BiocParallel) -->
+<!-- library(ggplot2) -->
+<!-- library(reshape2) -->
+<!-- library(pheatmap) -->
+
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+
+<!-- correct_and_analyze <- function(count_matrix, metadata, condition_col, covariate_cols, pc_n = 10, threads = 4) { -->
+<!--   # 0. Filtro de genes por expresión (fpm > 1 en al menos 50% de muestras) -->
+<!--   dge <- DGEList(counts = count_matrix) -->
+<!--   fpm <- edgeR::cpm(dge, log = FALSE) -->
+<!--   keep_genes <- rowSums(fpm > 1) >= (0.5 * ncol(count_matrix)) -->
+<!--   fpm_filtered <- fpm[keep_genes, ] -->
+<!--   log_fpm <- log2(fpm_filtered + 1) -->
+
+<!--   # 1. Corrección por covariables usando limma::removeBatchEffect -->
+<!--   design <- model.matrix(~ 0 + metadata[[condition_col]]) -->
+<!--   covariates <- as.data.frame(metadata[, covariate_cols, drop = FALSE]) -->
+<!--   corrected_expr <- removeBatchEffect(log_fpm, design = design, covariates = covariates) -->
+
+<!--   # 2. PCA en datos corregidos -->
+<!--   pca <- prcomp(t(corrected_expr), scale. = TRUE) -->
+<!--   pc_values <- pca$x[, 1:pc_n] -->
+<!--   var_explained <- summary(pca)$importance[2, 1:pc_n] -->
+
+<!--   # 3. Correlación con covariables numéricas y categóricas -->
+<!--   numeric_vars <- metadata[, sapply(metadata, is.numeric), drop = FALSE] -->
+<!--   factor_vars <- metadata[, !sapply(metadata, is.numeric), drop = FALSE] -->
+
+<!--   # Correlación numérica: Spearman -->
+<!--   cor_numeric <- cor(numeric_vars, pc_values, method = "spearman", use = "pairwise.complete.obs") -->
+<!--   pval_numeric <- matrix(NA, nrow = ncol(numeric_vars), ncol = pc_n) -->
+<!--   rownames(pval_numeric) <- colnames(numeric_vars) -->
+<!--   colnames(pval_numeric) <- paste0("PC", 1:pc_n) -->
+<!--   for (i in seq_along(numeric_vars)) { -->
+<!--     for (j in 1:pc_n) { -->
+<!--       pval_numeric[i, j] <- cor.test(numeric_vars[[i]], pc_values[, j], method = "spearman")$p.value -->
+<!--     } -->
+<!--   } -->
+
+<!--   # Correlación categórica: Kruskal-Wallis -->
+<!--   kw_stat <- matrix(NA, nrow = ncol(factor_vars), ncol = pc_n) -->
+<!--   kw_pval <- matrix(NA, nrow = ncol(factor_vars), ncol = pc_n) -->
+<!--   rownames(kw_stat) <- rownames(kw_pval) <- colnames(factor_vars) -->
+<!--   colnames(kw_stat) <- colnames(kw_pval) <- paste0("PC", 1:pc_n) -->
+<!--   for (i in seq_along(factor_vars)) { -->
+<!--     for (j in 1:pc_n) { -->
+<!--       test <- kruskal.test(pc_values[, j] ~ factor_vars[[i]]) -->
+<!--       kw_stat[i, j] <- test$statistic -->
+<!--       kw_pval[i, j] <- test$p.value -->
+<!--     } -->
+<!--   } -->
+
+<!--   # 4. Heatmaps de correlaciones significativas -->
+<!--   sig_cor <- abs(cor_numeric) * (pval_numeric < 0.05) -->
+<!--   heatmap_num <- pheatmap(sig_cor, display_numbers = round(cor_numeric, 2), -->
+<!--                           main = "Spearman Correlation (numeric)", silent = TRUE) -->
+
+<!--   sig_kw <- (kw_pval < 0.05) * kw_stat -->
+<!--   heatmap_cat <- pheatmap(sig_kw, display_numbers = signif(kw_pval, 2), -->
+<!--                           main = "Kruskal-Wallis Stat (categorical)", silent = TRUE) -->
+
+<!--   # 5. VariancePartition en datos antes y después -->
+<!--   f <- as.formula(paste("~", paste(c(condition_col, covariate_cols), collapse = " + "))) -->
+<!--   param <- SnowParam(workers = threads, type = "SOCK") -->
+<!--   varPart_before <- fitExtractVarPartModel(t(log_fpm), metadata, f, BPPARAM = param) -->
+<!--   varPart_after  <- fitExtractVarPartModel(t(corrected_expr), metadata, f, BPPARAM = param) -->
+
+<!--   plot_before <- plotVarPart(varPart_before) + ggtitle("Variance Partition (before correction)") -->
+<!--   plot_after  <- plotVarPart(varPart_after)  + ggtitle("Variance Partition (after correction)") -->
+
+<!--   # 6. Varianza explicada por los PCs -->
+<!--   var_df <- data.frame(PC = paste0("PC", 1:pc_n), Variance = var_explained * 100) -->
+<!--   pca_plot <- ggplot(var_df, aes(x = PC, y = Variance)) + -->
+<!--     geom_col(fill = "steelblue") + -->
+<!--     labs(title = "Variance Explained by PCs", y = "% Variance Explained") + -->
+<!--     theme_minimal() -->
+
+<!--   # Salida -->
+<!--   list( -->
+<!--     corrected_expr = corrected_expr, -->
+<!--     pca = pca, -->
+<!--     pc_plot = pca_plot, -->
+<!--     cor_numeric = cor_numeric, -->
+<!--     cor_pval_numeric = pval_numeric, -->
+<!--     cor_heatmap_numeric = heatmap_num, -->
+<!--     kw_stat = kw_stat, -->
+<!--     kw_pval = kw_pval, -->
+<!--     cor_heatmap_categorical = heatmap_cat, -->
+<!--     varPart_before = varPart_before, -->
+<!--     varPart_after = varPart_after, -->
+<!--     plot_before = plot_before, -->
+<!--     plot_after = plot_after -->
+<!--   ) -->
+<!-- } -->
+
+
+<!-- ``` -->
+
+Notas importantes
+
+    Asegúrate de que count_matrix tenga genes como filas y muestras como columnas.
+
+    La columna condition_col debe contener la condición experimental principal (no debe ser eliminada).
+
+    El vector covariate_cols debe contener los nombres de las columnas de metadata que representan covariables a corregir.
+
+    Este script mantiene la condición experimental durante la corrección, y remueve únicamente la contribución de las covariables.
+
+    Se emplea el filtro de expresión fpm > 1 en al menos el 50% de muestras tanto para PCA como para variancePartition, como se indica en el protocolo.
+
+```{r}
+
+
+
+```
+
+
+
+
