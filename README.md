@@ -50,7 +50,8 @@ Requirements
 
 ### Required Packages
 
-#### Data manipulation
+```{r}
+# Data manipulation
 tidyverse
 dplyr
 tidyr
@@ -59,18 +60,18 @@ stringr
 readxl
 readr
 
-#### Statistics
+# Statistics
 DESeq2
 rstatix
 broom
 
-#### Machine Learning
+# Machine Learning
 caret
 ranger
 randomForest
 glmnet
 
-#### Clustering
+# Clustering
 cluster
 fpc
 clValid
@@ -78,7 +79,7 @@ clusterSim
 factoextra
 dendextend
 
-#### Visualization
+# Visualization
 ggplot2
 ggpubr
 patchwork
@@ -88,24 +89,26 @@ RColorBrewer
 circlize
 networkD3
 
-#### Gene Annotation
+# Gene Annotation
 biomaRt
 msigdbr
 clusterProfiler
 org.Hs.eg.db
 gprofiler2
 
-#### Multivariate Analysis
+# Multivariate Analysis
 FactoMineR
 e1071
 
-#### Parallel Processing
+# Parallel Processing
 foreach
 doParallel
 
-#### Tables
+# Tables
 DT
 kableExtra
+
+```
 
 
 
