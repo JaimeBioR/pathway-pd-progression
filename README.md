@@ -110,5 +110,18 @@ kableExtra
 
 ```
 
+## Citation
+
+If you use this code in your research, please cite:
+
+Ñíguez, J. et al. Parkinson’s Disease motor and non-motor progression models emerge from pathway-level transcriptomics. 2026.02.25.26346261 Preprint at https://doi.org/10.64898/2026.02.25.26346261 (2026).
+
+
+
+## Contact
+
+Jaime Ñíguez Baeza (jaime.niguez@um.es)
+Juan A. Botía (juanbot@um.es)
+Ana-Luisa Gil-Martinez (analuisa.gil@um.es)
 
 
